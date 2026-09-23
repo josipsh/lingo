@@ -56,7 +56,7 @@ class Settings:
             if missing:
                 raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
         
-        if require_ai and bot_mode == "conversation":
+        if require_ai:
             missing = [
                 name
                 for name, value in [
@@ -66,7 +66,7 @@ class Settings:
                 if not value
             ]
             if missing:
-                raise ValueError(f"Missing required environment variables for conversation mode: {', '.join(missing)}")
+                raise ValueError(f"Missing required environment variables for AI features: {', '.join(missing)}")
 
         return cls(
             whatsapp_token=token,

@@ -53,6 +53,50 @@ uv sync
 uv run lingo
 ```
 
+## Testing Without WhatsApp Setup
+
+### CLI Tool for Local Testing
+
+Test the STT/LLM/TTS pipeline with audio files **without** needing WhatsApp or Meta infrastructure:
+
+```bash
+# Set API keys
+export ELEVENLABS_API_KEY=your-key
+export OPENAI_API_KEY=your-key
+
+# Process an audio file
+uv run lingo-cli input.mp3
+
+# Save bot response to file
+uv run lingo-cli input.mp3 -o response.wav
+
+# Or pass keys directly
+uv run lingo-cli input.mp3 \
+  --elevenlabs-api-key=your-key \
+  --openai-api-key=your-key \
+  -o response.wav
+```
+
+**What it does:**
+1. Reads your audio file (any format FFmpeg supports)
+2. Transcribes it with ElevenLabs STT
+3. Sends transcript to OpenAI LLM
+4. Generates response audio with ElevenLabs TTS
+5. Prints transcript and response text
+6. Optionally saves response audio to file
+
+**Requirements:**
+- FFmpeg installed (`apt install ffmpeg` or `brew install ffmpeg`)
+- ElevenLabs and OpenAI API keys
+- No WhatsApp, tunnels, or webhooks needed
+
+**Use cases:**
+- Quick testing during development
+- Validating API credentials
+- Testing conversation logic with sample audio
+- CI/CD integration tests
+- Demos without WhatsApp setup
+
 ## Environment
 
 | Variable | Required | Description |

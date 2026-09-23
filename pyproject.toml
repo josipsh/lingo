@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 lingo = "lingo.server:main"
+lingo-cli = "lingo.cli:main"
 
 [build-system]
 requires = ["hatchling"]
