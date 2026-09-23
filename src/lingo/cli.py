@@ -5,22 +5,35 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+import aiohttp
 from loguru import logger
 from pipecat.frames.frames import (
     AudioRawFrame,
     EndFrame,
-    LLMMessagesFrame,
-    TextFrame,
+    Frame,
+    InputAudioRawFrame,
+    LLMFullResponseEndFrame,
+    LLMTextFrame,
+    TranscriptionFrame,
+    TTSAudioRawFrame,
+    TTSStoppedFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
+from pipecat.pipeline.worker import PipelineParams, PipelineWorker
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import (
+    LLMContextAggregatorPair,
+)
 from pipecat.processors.frame_processor import FrameProcessor
-from pipecat.services.elevenlabs import ElevenLabsSTTService, ElevenLabsTTSService
-from pipecat.services.openai import OpenAILLMService
+from pipecat.services.elevenlabs.stt import ElevenLabsSTTService
+from pipecat.services.elevenlabs.tts import ElevenLabsHttpTTSService
+from pipecat.services.openai.llm import OpenAILLMService
+from pipecat.workers.runner import WorkerRunner
 
 from lingo.config import Settings
 
@@ -42,18 +55,19 @@ class AudioFileReader(FrameProcessor):
         else:
             await self.push_frame(frame, direction)
 
-    async def run(self):
+    async def run(self, queue_frame: Callable[[Frame], Awaitable[None]]) -> None:
         """Read audio file and emit frames."""
         try:
             # Use FFmpeg to convert audio to PCM
-            import subprocess
             import shutil
+            import subprocess
 
             ffmpeg = shutil.which("ffmpeg")
             if not ffmpeg:
                 raise RuntimeError("FFmpeg is required but not found in PATH")
 
             logger.info(f"Reading audio from {self._audio_file}")
+            await queue_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
 
             process = subprocess.Popen(
                 [
@@ -77,12 +91,12 @@ class AudioFileReader(FrameProcessor):
                 if not chunk:
                     break
 
-                audio_frame = AudioRawFrame(
+                audio_frame = InputAudioRawFrame(
                     audio=chunk,
                     sample_rate=self._sample_rate,
                     num_channels=1,
                 )
-                await self.push_frame(audio_frame)
+                await queue_frame(audio_frame)
 
             # Wait for process to complete
             _, stderr = process.communicate()
@@ -90,7 +104,7 @@ class AudioFileReader(FrameProcessor):
                 raise RuntimeError(f"FFmpeg failed: {stderr.decode()}")
 
             logger.info("Finished reading audio file")
-            await self.push_frame(EndFrame())
+            await queue_frame(VADUserStoppedSpeakingFrame(stop_secs=0.2))
 
         except Exception as exc:
             logger.error(f"Error reading audio file: {exc}")
@@ -98,20 +112,56 @@ class AudioFileReader(FrameProcessor):
 
 
 class TranscriptPrinter(FrameProcessor):
-    """Print transcription and LLM responses."""
+    """Print the input transcription."""
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
 
-        if isinstance(frame, TextFrame):
-            # This is transcribed text from STT
+        if isinstance(frame, TranscriptionFrame):
             print(f"\n[Transcript]: {frame.text}")
-        elif isinstance(frame, LLMMessagesFrame):
-            # This is the LLM response
-            for message in frame.messages:
-                if message.get("role") == "assistant":
-                    content = message.get("content", "")
-                    print(f"[Assistant]: {content}")
+
+        await self.push_frame(frame, direction)
+
+
+class AssistantPrinter(FrameProcessor):
+    """Collect streamed LLM text and print the complete response."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._parts: list[str] = []
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+
+        if isinstance(frame, LLMTextFrame):
+            self._parts.append(frame.text)
+        elif isinstance(frame, LLMFullResponseEndFrame) and self._parts:
+            print(f"[Assistant]: {''.join(self._parts)}")
+            self._parts.clear()
+
+        await self.push_frame(frame, direction)
+
+
+class ResponseCompletionTracker(FrameProcessor):
+    """Signal when the generated speech response has finished."""
+
+    def __init__(self, event: asyncio.Event, *, wait_for_tts: bool, **kwargs):
+        super().__init__(**kwargs)
+        self._event = event
+        self._wait_for_tts = wait_for_tts
+        self._llm_complete = False
+        self._tts_complete = False
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+
+        if isinstance(frame, LLMFullResponseEndFrame):
+            self._llm_complete = True
+        elif isinstance(frame, TTSStoppedFrame):
+            self._tts_complete = True
+
+        if self._llm_complete and (not self._wait_for_tts or self._tts_complete):
+            self._event.set()
 
         await self.push_frame(frame, direction)
 
@@ -125,12 +175,17 @@ class AudioFileWriter(FrameProcessor):
         self._audio_data = bytearray()
         self._sample_rate = 16000
 
+    @property
+    def has_audio(self) -> bool:
+        return bool(self._audio_data)
+
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
 
-        if isinstance(frame, AudioRawFrame):
+        if isinstance(frame, TTSAudioRawFrame):
             # Collect audio from TTS
             self._audio_data.extend(frame.audio)
+            self._sample_rate = frame.sample_rate
         elif isinstance(frame, EndFrame):
             # Write collected audio to file
             if self._audio_data:
@@ -140,8 +195,8 @@ class AudioFileWriter(FrameProcessor):
 
     async def _write_audio(self):
         """Write audio data to file using FFmpeg."""
-        import subprocess
         import shutil
+        import subprocess
 
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
@@ -179,67 +234,86 @@ async def process_audio_file(
     settings: Settings,
 ) -> None:
     """Process audio file through STT → LLM → TTS pipeline."""
+    async with aiohttp.ClientSession() as aiohttp_session:
+        stt = ElevenLabsSTTService(
+            api_key=settings.elevenlabs_api_key,
+            aiohttp_session=aiohttp_session,
+            settings=ElevenLabsSTTService.Settings(language="en"),
+        )
+        llm = OpenAILLMService(
+            api_key=settings.openai_api_key,
+            settings=OpenAILLMService.Settings(
+                model=settings.openai_model,
+                system_instruction=(
+                    "You are a helpful voice assistant. Keep your responses concise and "
+                    "conversational."
+                ),
+            ),
+        )
+        context_aggregator = LLMContextAggregatorPair(
+            LLMContext(),
+        )
 
-    # Create services
-    stt = ElevenLabsSTTService(
-        api_key=settings.elevenlabs_api_key,
-        language="en",
-    )
+        reader = AudioFileReader(input_file)
+        response_complete = asyncio.Event()
+        writer = None
+        processors = [
+            reader,
+            stt,
+            TranscriptPrinter(),
+            context_aggregator.user(),
+            llm,
+            AssistantPrinter(),
+        ]
+        if output_file:
+            writer = AudioFileWriter(output_file)
+            tts = ElevenLabsHttpTTSService(
+                api_key=settings.elevenlabs_api_key,
+                aiohttp_session=aiohttp_session,
+                settings=ElevenLabsHttpTTSService.Settings(
+                    voice=settings.elevenlabs_voice_id
+                ),
+            )
+            processors.extend(
+                [
+                    tts,
+                    ResponseCompletionTracker(response_complete, wait_for_tts=True),
+                    writer,
+                ]
+            )
+        else:
+            processors.append(
+                ResponseCompletionTracker(response_complete, wait_for_tts=False)
+            )
+        processors.append(context_aggregator.assistant())
 
-    llm = OpenAILLMService(
-        api_key=settings.openai_api_key,
-        model=settings.openai_model,
-    )
+        worker = PipelineWorker(
+            Pipeline(processors),
+            params=PipelineParams(
+                enable_metrics=False,
+                enable_usage_metrics=False,
+            ),
+        )
+        runner = WorkerRunner(handle_sigint=False)
 
-    tts = ElevenLabsTTSService(
-        api_key=settings.elevenlabs_api_key,
-        voice_id=settings.elevenlabs_voice_id,
-    )
+        @runner.event_handler("on_ready")
+        async def on_ready(_runner):
+            await reader.run(worker.queue_frame)
+            try:
+                await asyncio.wait_for(response_complete.wait(), timeout=60)
+            except TimeoutError:
+                await worker.cancel(reason="Timed out waiting for the generated response")
+                raise RuntimeError("Timed out waiting for the generated response") from None
+            await worker.queue_frame(EndFrame())
 
-    # Set up conversation context
-    messages = [
-        {
-            "role": "system",
-            "content": "You are a helpful voice assistant. Keep your responses concise and conversational.",
-        },
-    ]
-    context = OpenAILLMContext(messages)
-    context_aggregator = llm.create_context_aggregator(context)
+        await runner.add_workers(worker)
+        await runner.run()
 
-    # Build pipeline
-    processors = [
-        AudioFileReader(input_file),
-        stt,
-        TranscriptPrinter(),
-        context_aggregator.user(),
-        llm,
-        tts,
-        context_aggregator.assistant(),
-    ]
-
-    if output_file:
-        processors.append(AudioFileWriter(output_file))
-
-    pipeline = Pipeline(processors)
-    task = PipelineTask(
-        pipeline,
-        params=PipelineParams(
-            allow_interruptions=False,
-            enable_metrics=False,
-            enable_usage_metrics=False,
-        ),
-    )
-
-    # Initialize context
-    await task.queue_frames([context_aggregator.user().get_context_frame()])
-
-    # Start file reader
-    reader = processors[0]
-    asyncio.create_task(reader.run())
-
-    # Run pipeline
-    runner = PipelineRunner()
-    await runner.run(task)
+        if writer and not writer.has_audio:
+            raise RuntimeError(
+                "No response audio was generated; check the ElevenLabs TTS error above "
+                "and verify that your account can use ELEVENLABS_VOICE_ID"
+            )
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -267,13 +341,11 @@ def create_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--openai-model",
-        default="gpt-4o-mini",
-        help="OpenAI model (default: gpt-4o-mini)",
+        help="OpenAI model (default: OPENAI_MODEL env or gpt-4o-mini)",
     )
     parser.add_argument(
         "--elevenlabs-voice-id",
-        default="21m00Tcm4TlvDq8ikWAM",
-        help="ElevenLabs voice ID (default: Rachel)",
+        help="ElevenLabs voice ID (default: ELEVENLABS_VOICE_ID env or Rachel)",
     )
     parser.add_argument(
         "-v",
@@ -331,7 +403,7 @@ def main(argv: list[str] | None = None) -> None:
         logger.warning("Interrupted by user")
         sys.exit(130)
     except Exception as exc:
-        logger.exception(f"Processing failed: {exc}")
+        logger.error(f"Processing failed: {exc}")
         sys.exit(1)
 
 
