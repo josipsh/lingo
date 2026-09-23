@@ -5,7 +5,7 @@ description = "WhatsApp voice bot with ElevenLabs STT/TTS and OpenAI LLM"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "pipecat-ai[silero,webrtc,openai,elevenlabs]>=1.8.0",
+    "pipecat-ai[silero,webrtc,openai,elevenlabs]==1.11.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
     "python-dotenv>=1.0.1",
