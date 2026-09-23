@@ -1,0 +1,13 @@
+services:
+  lingo:
+    build: .
+    image: lingo-whatsapp:local
+    ports:
+      - "${PORT:-7860}:7860"
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 7860
+      ECHO_MODE: ${ECHO_MODE:-utterance}
+    restart: unless-stopped
