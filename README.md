@@ -1,8 +1,9 @@
 # Lingo
 
-Lingo streams 16 kHz mono PCM audio over a provider-neutral WebSocket and
-returns partial and final transcripts. ElevenLabs Scribe handles realtime
-transcription in production.
+Lingo streams 16 kHz mono PCM audio over a provider-neutral WebSocket. It
+returns partial and final transcripts, then streams an MP3 reading of each
+non-empty final transcript. ElevenLabs handles transcription and speech in
+production.
 
 ## Setup
 
@@ -24,9 +25,15 @@ Start the server:
 uv run lingo-server
 ```
 
-The optional settings are `ELEVENLABS_MODEL`, `TRANSCRIPTION_LANGUAGE`, and
-`ELEVENLABS_WS_URL`. Audio is fixed to `pcm_16000`; the server rejects any
-other `AUDIO_FORMAT` value.
+The optional settings are `ELEVENLABS_MODEL`, `ELEVENLABS_SPEECH_MODEL`,
+`TRANSCRIPTION_LANGUAGE`, `ELEVENLABS_WS_URL`, and `ELEVENLABS_TTS_URL`.
+Input audio is fixed to `pcm_16000`. Speech output is fixed to
+`mp3_44100_128`.
+
+The WebSocket has no authentication, rate limit, or generation budget. Run it
+locally only. Add those controls before exposing it to untrusted clients, or
+one connection can spend both transcription and speech credits. Use a
+restricted ElevenLabs key with a credit quota.
 
 ## WebSocket contract
 
@@ -37,8 +44,12 @@ base64-encoded signed 16-bit little-endian mono PCM at 16 kHz:
 {"type":"audio_chunk","audio":"<base64 PCM>"}
 ```
 
-The server emits `ready`, `partial_transcript`, `final_transcript`, and `error`
-events. It does not store audio, transcripts, or session data.
+The server emits `ready`, `partial_transcript`, and `final_transcript` events.
+A non-empty final transcript has a `clip_id`, followed by `speech_start`, one
+or more `speech_chunk` events, and either `speech_end` or `speech_error` with
+the same ID. Speech chunks contain base64-encoded `mp3_44100_128` bytes.
+General `error` events report bad input or fatal transcription failures. The
+server does not store audio, transcripts, generated speech, or session data.
 
 ## MP3 client
 
@@ -50,7 +61,9 @@ uv run lingo-transcribe recording.mp3
 
 Use `--url` to target a server at another address. The client converts the MP3
 to the server's PCM format, streams it at its real audio rate, adds two seconds
-of silence for voice activity detection, and waits for a final transcript.
+of silence for voice activity detection, and waits for the final speech job.
+It writes completed clips as `<clip_id>.mp3` in the current directory. If a
+speech stream fails after sending bytes, it writes `<clip_id>.partial.mp3`.
 
 ## Tests
 
@@ -58,5 +71,5 @@ of silence for voice activity detection, and waits for a final transcript.
 uv run pytest
 ```
 
-Tests use an in-memory provider. They do not read the API key, open external
-connections, or consume ElevenLabs credits.
+Tests use in-memory providers and HTTP mock transports. They do not read the
+API key, open external connections, or consume ElevenLabs credits.

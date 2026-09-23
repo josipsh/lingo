@@ -2,11 +2,21 @@ import base64
 import json
 from urllib.parse import parse_qs, urlparse
 
+import httpx
 import pytest
 from websockets.asyncio.server import serve
 
-from lingo.provider import ProviderError, TranscriptionConfig
-from lingo.providers.elevenlabs import ElevenLabsProvider, ElevenLabsSession
+from lingo.provider import (
+    ProviderError,
+    SpeechConfig,
+    SpeechProviderError,
+    TranscriptionConfig,
+)
+from lingo.providers.elevenlabs import (
+    ElevenLabsProvider,
+    ElevenLabsSession,
+    ElevenLabsSpeechProvider,
+)
 
 
 class FakeWebSocket:
@@ -111,3 +121,96 @@ async def test_provider_connection_uses_config_and_api_key() -> None:
         "commit_strategy": ["vad"],
     }
     assert event.session_id == "abc"
+
+
+class ChunkStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield b"first"
+        yield b"second"
+
+
+class FailingChunkStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield b"first"
+        raise httpx.ReadError("stream interrupted")
+
+
+@pytest.mark.asyncio
+async def test_speech_request_and_stream_contract() -> None:
+    request_details = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        request_details["request"] = request
+        request_details["body"] = json.loads(request.content)
+        return httpx.Response(200, stream=ChunkStream())
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = ElevenLabsSpeechProvider(
+            "secret", "https://provider.test/v1/text-to-speech", client
+        )
+        config = SpeechConfig(
+            "eleven_flash_v2_5", "voice-123", "hr", "mp3_44100_128"
+        )
+        chunks = [chunk async for chunk in provider.synthesize("Pozdrav", config)]
+
+    request = request_details["request"]
+    assert str(request.url) == (
+        "https://provider.test/v1/text-to-speech/voice-123/stream"
+        "?output_format=mp3_44100_128"
+    )
+    assert request.headers["xi-api-key"] == "secret"
+    assert request.headers["accept"] == "audio/mpeg"
+    assert request_details["body"] == {
+        "text": "Pozdrav",
+        "model_id": "eleven_flash_v2_5",
+        "language_code": "hr",
+    }
+    assert chunks == [b"first", b"second"]
+
+
+@pytest.mark.asyncio
+async def test_speech_provider_failure_captures_request_id() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            headers={"request-id": "request-123"},
+            content=b"quota details",
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = ElevenLabsSpeechProvider(
+            "secret", "https://provider.test/tts", client
+        )
+        with pytest.raises(SpeechProviderError) as exc_info:
+            _ = [
+                chunk
+                async for chunk in provider.synthesize(
+                    "text", SpeechConfig("model", "voice", "en", "mp3_44100_128")
+                )
+            ]
+
+    assert exc_info.value.request_id == "request-123"
+
+
+@pytest.mark.asyncio
+async def test_speech_stream_failure_retains_request_id() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"request-id": "stream-request-123"},
+            stream=FailingChunkStream(),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = ElevenLabsSpeechProvider(
+            "secret", "https://provider.test/tts", client
+        )
+        with pytest.raises(SpeechProviderError) as exc_info:
+            _ = [
+                chunk
+                async for chunk in provider.synthesize(
+                    "text", SpeechConfig("model", "voice", "en", "mp3_44100_128")
+                )
+            ]
+
+    assert exc_info.value.request_id == "stream-request-123"

@@ -32,3 +32,25 @@ class TranscriptionSession(Protocol):
 
 class TranscriptionProvider(Protocol):
     async def connect(self, config: TranscriptionConfig) -> TranscriptionSession: ...
+
+
+@dataclass(frozen=True)
+class SpeechConfig:
+    model: str
+    voice_id: str
+    language: str
+    output_format: str
+
+
+class SpeechProviderError(Exception):
+    """An error from the speech provider."""
+
+    def __init__(self, message: str, request_id: str | None = None):
+        super().__init__(message)
+        self.request_id = request_id
+
+
+class SpeechProvider(Protocol):
+    def synthesize(
+        self, text: str, config: SpeechConfig
+    ) -> AsyncIterator[bytes]: ...

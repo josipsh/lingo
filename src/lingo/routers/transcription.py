@@ -3,6 +3,8 @@ import base64
 import binascii
 import json
 import logging
+import uuid
+from dataclasses import dataclass
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
@@ -10,6 +12,8 @@ from starlette.websockets import WebSocketState
 from ..provider import (
     ProviderError,
     ProviderEvent,
+    SpeechConfig,
+    SpeechProvider,
     TranscriptionConfig,
     TranscriptionProvider,
     TranscriptionSession,
@@ -19,7 +23,10 @@ logger = logging.getLogger(__name__)
 
 
 def create_router(
-    provider: TranscriptionProvider, config: TranscriptionConfig
+    provider: TranscriptionProvider,
+    config: TranscriptionConfig,
+    speech_provider: SpeechProvider,
+    speech_config: SpeechConfig,
 ) -> APIRouter:
     router = APIRouter(prefix="/ws", tags=["transcription"])
 
@@ -27,7 +34,13 @@ def create_router(
     async def transcription(websocket: WebSocket) -> None:
         await websocket.accept()
         messages: asyncio.Queue[dict | None] = asyncio.Queue()
+        speech_jobs: asyncio.Queue[SpeechJob] = asyncio.Queue()
         disconnected = asyncio.Event()
+        send_lock = asyncio.Lock()
+
+        async def send_json(message: dict) -> None:
+            async with send_lock:
+                await websocket.send_json(message)
 
         async def collect_messages() -> None:
             try:
@@ -74,7 +87,7 @@ def create_router(
                     try:
                         audio = _parse_frame(frame)
                     except ClientMessageError as exc:
-                        await websocket.send_json(
+                        await send_json(
                             {"type": "error", "code": 400, "message": str(exc)}
                         )
                         continue
@@ -82,12 +95,78 @@ def create_router(
 
             async def forward_events() -> None:
                 async for event in session.events():
-                    await websocket.send_json(_client_event(event))
+                    if event.type == "final" and event.text is not None:
+                        text = event.text
+                        if text.strip():
+                            clip_id = uuid.uuid4().hex
+                            await send_json(
+                                {
+                                    "type": "final_transcript",
+                                    "clip_id": clip_id,
+                                    "text": text,
+                                }
+                            )
+                            await speech_jobs.put(
+                                SpeechJob(clip_id, select_speech_text(text))
+                            )
+                        else:
+                            await send_json(
+                                {"type": "final_transcript", "text": text}
+                            )
+                    else:
+                        await send_json(_client_event(event))
                 raise ProviderError("Provider event stream ended unexpectedly")
+
+            async def generate_speech() -> None:
+                while True:
+                    job = await speech_jobs.get()
+                    await send_json(
+                        {
+                            "type": "speech_start",
+                            "clip_id": job.clip_id,
+                            "format": speech_config.output_format,
+                        }
+                    )
+                    try:
+                        async for chunk in speech_provider.synthesize(
+                            job.text, speech_config
+                        ):
+                            if chunk:
+                                await send_json(
+                                    {
+                                        "type": "speech_chunk",
+                                        "clip_id": job.clip_id,
+                                        "audio": base64.b64encode(chunk).decode("ascii"),
+                                    }
+                                )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.exception(
+                            "Speech generation failed for clip %s (request_id=%s)",
+                            job.clip_id,
+                            getattr(exc, "request_id", None),
+                        )
+                        await send_json(
+                            {
+                                "type": "speech_error",
+                                "clip_id": job.clip_id,
+                                "code": 502,
+                                "message": "Speech generation unavailable",
+                            }
+                        )
+                    else:
+                        await send_json(
+                            {"type": "speech_end", "clip_id": job.clip_id}
+                        )
+                    finally:
+                        speech_jobs.task_done()
 
             tasks = {
                 asyncio.create_task(receive_audio()),
                 asyncio.create_task(forward_events()),
+                asyncio.create_task(generate_speech()),
+                disconnect_task,
             }
             try:
                 completed, pending = await asyncio.wait(
@@ -133,6 +212,16 @@ class ClientMessageError(ValueError):
     pass
 
 
+@dataclass(frozen=True)
+class SpeechJob:
+    clip_id: str
+    text: str
+
+
+def select_speech_text(transcript: str) -> str:
+    return transcript
+
+
 def _parse_frame(frame: dict) -> bytes:
     raw_message = frame.get("text")
     if not isinstance(raw_message, str):
@@ -168,8 +257,6 @@ def _client_event(event: ProviderEvent) -> dict[str, str]:
         return {"type": "ready", "session_id": event.session_id}
     if event.type == "partial" and event.text is not None:
         return {"type": "partial_transcript", "text": event.text}
-    if event.type == "final" and event.text is not None:
-        return {"type": "final_transcript", "text": event.text}
     raise ProviderError("Provider returned an invalid event")
 
 
