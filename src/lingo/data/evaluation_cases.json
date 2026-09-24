@@ -1,0 +1,17 @@
+[
+  {"id":"pt-01","background":"Brazilian Portuguese","learner_text":"I have 32 years and I work with design.","context":"Clear transcript.","must_correct":["I am 32 years old"],"leave_alone":[]},
+  {"id":"pt-02","background":"Brazilian Portuguese","learner_text":"Yesterday I went to the beach with my friends. It was lovely.","context":"Natural standard English.","must_correct":[],"leave_alone":["went to the beach"]},
+  {"id":"pt-03","background":"Brazilian Portuguese","learner_text":"I pretend to change jobs next year because I want a new challenge.","context":"Pretend is likely false-friend transfer and changes the meaning.","must_correct":["I intend/plan to change jobs"],"leave_alone":[]},
+  {"id":"pt-04","background":"Brazilian Portuguese","learner_text":"My manager said the project is beach, or maybe breach? I couldn't hear him.","context":"Likely STT ambiguity. Ask for clarification.","must_correct":[],"leave_alone":["beach/breach ambiguity"]},
+  {"id":"pt-05","background":"Brazilian Portuguese","learner_text":"For me, working remotely is more practical, but I still like the office.","context":"Valid wording despite possible preference differences.","must_correct":[],"leave_alone":["more practical"]},
+  {"id":"es-01","background":"Spanish from Spain","learner_text":"I am agree with the first option.","context":"Clear grammar error.","must_correct":["I agree with the first option"],"leave_alone":[]},
+  {"id":"es-02","background":"Spanish from Spain","learner_text":"I went on holiday in August and stayed in a small flat.","context":"British standard forms are valid.","must_correct":[],"leave_alone":["on holiday","flat"]},
+  {"id":"es-03","background":"Spanish from Spain","learner_text":"Actually I live in Madrid, but I grew up in Valencia.","context":"Actually correctly means in fact here.","must_correct":[],"leave_alone":["Actually"]},
+  {"id":"es-04","background":"Spanish from Spain","learner_text":"The meeting was very constipated, with too many people in one room.","context":"The intended word is probably crowded. Meaning is affected.","must_correct":["The meeting was very crowded"],"leave_alone":[]},
+  {"id":"es-05","background":"Spanish from Spain","learner_text":"She explained me how the system works.","context":"Clear reusable verb pattern.","must_correct":["She explained to me how the system works"],"leave_alone":[]},
+  {"id":"hr-01","background":"Croatian","learner_text":"I work in this company since five years.","context":"Clear tense and duration pattern. One concise correction is enough.","must_correct":["I have worked at this company for five years"],"leave_alone":[]},
+  {"id":"hr-02","background":"Croatian","learner_text":"I would like that we meet next week.","context":"Understandable but markedly unnatural in American English.","must_correct":["I would like us to meet next week"],"leave_alone":[]},
+  {"id":"hr-03","background":"Croatian","learner_text":"I put the keys on the table and then left the house.","context":"Fully natural English.","must_correct":[],"leave_alone":["put the keys on the table"]},
+  {"id":"hr-04","background":"Croatian","learner_text":"We discussed about the budget for an hour.","context":"Reusable verb-complement pattern.","must_correct":["We discussed the budget"],"leave_alone":[]},
+  {"id":"hr-05","background":"Croatian","learner_text":"My brother lives in Rijeka, which is on the coast, and he often comes home at weekends.","context":"At weekends is valid standard British English.","must_correct":[],"leave_alone":["at weekends"]}
+]

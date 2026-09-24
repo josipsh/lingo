@@ -1,4 +1,17 @@
 services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: lingo
+      POSTGRES_USER: lingo
+      POSTGRES_PASSWORD: lingo
+    volumes:
+      - lingo-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lingo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
   lingo:
     build: .
     image: lingo-whatsapp:local
@@ -9,5 +22,10 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 7860
-      ECHO_MODE: ${ECHO_MODE:-utterance}
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  lingo-postgres:

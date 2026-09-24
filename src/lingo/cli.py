@@ -25,7 +25,6 @@ from pipecat.frames.frames import (
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
-from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
 )
@@ -36,6 +35,8 @@ from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.workers.runner import WorkerRunner
 
 from lingo.config import Settings
+from lingo.context import BoundedLLMContext
+from lingo.policy import build_tutor_policy
 
 
 class AudioFileReader(FrameProcessor):
@@ -244,14 +245,11 @@ async def process_audio_file(
             api_key=settings.openai_api_key,
             settings=OpenAILLMService.Settings(
                 model=settings.openai_model,
-                system_instruction=(
-                    "You are a helpful voice assistant. Keep your responses concise and "
-                    "conversational."
-                ),
+                system_instruction=build_tutor_policy(),
             ),
         )
         context_aggregator = LLMContextAggregatorPair(
-            LLMContext(),
+            BoundedLLMContext(),
         )
 
         reader = AudioFileReader(input_file)
@@ -341,7 +339,7 @@ def create_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--openai-model",
-        help="OpenAI model (default: OPENAI_MODEL env or gpt-4o-mini)",
+        help="OpenAI model (default: OPENAI_MODEL env or gpt-6-luna)",
     )
     parser.add_argument(
         "--elevenlabs-voice-id",

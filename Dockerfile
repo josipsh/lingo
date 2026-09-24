@@ -26,7 +26,7 @@ RUN curl -LsSf https://astral.sh/uv/0.8.22/install.sh | sh \
     && ln -s /root/.local/bin/uvx /usr/local/bin/uvx
 
 # Install dependencies first for better layer caching
-COPY pyproject.toml README.md uv.lock ./
+COPY pyproject.toml README.md uv.lock alembic.ini ./
 COPY src ./src
 
 RUN uv sync --frozen --no-dev
@@ -36,4 +36,4 @@ EXPOSE 7860
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD curl -fsS http://127.0.0.1:7860/health || exit 1
 
-CMD ["lingo"]
+CMD ["lingo-start"]
