@@ -6,7 +6,6 @@ import argparse
 import os
 import sys
 from contextlib import asynccontextmanager
-from typing import Optional
 
 import aiohttp
 import uvicorn
@@ -17,21 +16,30 @@ from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
 from pipecat.transports.whatsapp.api import WhatsAppConnectCall, WhatsAppWebhookRequest
 from pipecat.transports.whatsapp.client import WhatsAppClient
 
+from lingo.analysis import OpenAIAnalysisClient
 from lingo.bot import run_bot
 from lingo.config import Settings
+from lingo.database import SessionStore, create_session_factory
 
-whatsapp_client: Optional[WhatsAppClient] = None
-settings: Optional[Settings] = None
+whatsapp_client: WhatsAppClient | None = None
+settings: Settings | None = None
+session_store: SessionStore | None = None
+analysis_client: OpenAIAnalysisClient | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global whatsapp_client, settings
+    global whatsapp_client, settings, session_store, analysis_client
 
     # Load settings - only require AI credentials if in conversation mode
     bot_mode = os.getenv("BOT_MODE", "conversation").strip().lower()
     require_ai = (bot_mode == "conversation")
     settings = Settings.from_env(require_whatsapp=True, require_ai=require_ai)
+    engine = None
+    if settings.bot_mode == "conversation":
+        engine, session_factory = create_session_factory(settings.database_url)
+        session_store = SessionStore(session_factory)
+        analysis_client = OpenAIAnalysisClient(settings.openai_api_key, settings.openai_model)
     logger.info(
         "Starting Lingo WhatsApp bot server (mode={}, phone_number_id={})",
         settings.bot_mode,
@@ -51,12 +59,19 @@ async def lifespan(app: FastAPI):
             logger.info("Terminating active WhatsApp calls...")
             await whatsapp_client.terminate_all_calls()
             whatsapp_client = None
+            session_store = None
+            analysis_client = None
+            if engine:
+                engine.dispose()
             logger.info("Shutdown complete")
 
 
 app = FastAPI(
     title="Lingo WhatsApp Voice Bot",
-    description="WhatsApp Cloud API voice bot with ElevenLabs STT/TTS and OpenAI LLM, or echo mode for testing.",
+    description=(
+        "WhatsApp Cloud API voice bot with ElevenLabs STT/TTS and OpenAI LLM, "
+        "or echo mode for testing."
+    ),
     version="0.2.0",
     lifespan=lifespan,
 )
@@ -111,8 +126,10 @@ async def whatsapp_webhook(
         connection: SmallWebRTCConnection,
         call: WhatsAppConnectCall,
     ) -> None:
-        logger.info("Accepted WhatsApp call id={} from={}", call.id, call.from_)
-        background_tasks.add_task(run_bot, connection, settings, call)
+        logger.info("Accepted WhatsApp call id={}", call.id)
+        background_tasks.add_task(
+            run_bot, connection, settings, call, session_store, analysis_client
+        )
 
     try:
         result = await whatsapp_client.handle_webhook_request(
@@ -133,14 +150,17 @@ async def whatsapp_webhook(
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Lingo WhatsApp echo bot server")
     parser.add_argument("--host", default=None, help="Bind host (default: HOST env or 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=None, help="Bind port (default: PORT env or 7860)")
+    parser.add_argument(
+        "--port", type=int, default=None, help="Bind port (default: PORT env or 7860)"
+    )
     parser.add_argument("-v", "--verbose", action="count", default=0)
     return parser
 
 
 def main(argv: list[str] | None = None) -> None:
     args = create_parser().parse_args(argv)
-    cfg = Settings.from_env(require_whatsapp=True)
+    require_ai = os.getenv("BOT_MODE", "conversation").strip().lower() == "conversation"
+    cfg = Settings.from_env(require_whatsapp=True, require_ai=require_ai)
 
     logger.remove()
     logger.add(sys.stderr, level="TRACE" if args.verbose else "INFO")

@@ -8,7 +8,8 @@ WhatsApp voice bot with **ElevenLabs STT/TTS** and **OpenAI LLM** for natural vo
 2. This service accepts the call over WebRTC (via Pipecat)
 3. In **conversation mode** (default):
    - Caller audio → ElevenLabs STT → OpenAI LLM → ElevenLabs TTS → Response audio
-   - Natural voice conversation with AI assistant
+   - LinGo keeps the conversation moving and selects up to two useful corrections
+   - Completed turns and post-call learning memory are stored in PostgreSQL
 4. In **echo modes** (for testing):
    - **echo_utterance**: buffers with Silero VAD, replays after silence
    - **echo_live**: immediate audio loopback
@@ -21,6 +22,7 @@ cp .env.example .env
 #   - WhatsApp: WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, etc.
 #   - ElevenLabs: ELEVENLABS_API_KEY
 #   - OpenAI: OPENAI_API_KEY
+#   - Storage: DATABASE_URL, LEARNER_ID_SECRET
 
 docker compose up --build
 ```
@@ -109,7 +111,9 @@ uv run lingo-cli input.mp3 \
 | `ELEVENLABS_API_KEY` | yes* | ElevenLabs API key (*required for conversation mode) |
 | `ELEVENLABS_VOICE_ID` | no | Voice ID (default: Rachel) |
 | `OPENAI_API_KEY` | yes* | OpenAI API key (*required for conversation mode) |
-| `OPENAI_MODEL` | no | Model (default: gpt-4o-mini) |
+| `OPENAI_MODEL` | no | Model (default: `gpt-6-luna`) |
+| `DATABASE_URL` | yes* | SQLAlchemy PostgreSQL URL (*conversation mode) |
+| `LEARNER_ID_SECRET` | yes* | Secret for protected learner IDs (*conversation mode) |
 | `HOST` / `PORT` | no | Bind address (default `0.0.0.0:7860`) |
 
 ## Bot Modes
@@ -117,7 +121,7 @@ uv run lingo-cli input.mp3 \
 ### Conversation Mode (Production)
 Real AI voice assistant using:
 - **ElevenLabs STT**: Speech-to-text with low latency
-- **OpenAI LLM**: GPT-4 or GPT-4o-mini for conversation
+- **OpenAI LLM**: configured `gpt-6-luna` model for conversation and post-call analysis
 - **ElevenLabs TTS**: Natural voice synthesis
 
 Set `BOT_MODE=conversation` and provide API keys.
@@ -133,9 +137,20 @@ For validating WhatsApp infrastructure without AI costs:
 src/lingo/
   server.py   # FastAPI webhooks + health
   bot.py      # Per-call Pipecat pipeline (STT/LLM/TTS or echo)
+  policy.py   # Shared live tutoring policy
+  models.py   # SQLAlchemy transcript and learning-memory models
+  analysis.py # Post-call extraction and recurring-pattern updates
   echo.py     # Echo processors for testing
   config.py   # Unified configuration
 ```
+
+Export the 15-case evaluation set for teacher review without calling external services:
+
+```bash
+uv run lingo-eval --output teacher-review.csv
+```
+
+Add `--run` to collect responses from the configured OpenAI model before export.
 
 ## Deploy notes
 

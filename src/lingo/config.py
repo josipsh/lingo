@@ -20,6 +20,8 @@ class Settings:
     elevenlabs_voice_id: str
     openai_api_key: str
     openai_model: str
+    database_url: str
+    learner_id_secret: str
     bot_mode: str
     host: str
     port: int
@@ -30,12 +32,14 @@ class Settings:
         phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "").strip()
         verify_token = os.getenv("WHATSAPP_WEBHOOK_VERIFICATION_TOKEN", "").strip()
         app_secret = os.getenv("WHATSAPP_APP_SECRET", "").strip() or None
-        
+
         elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY", "").strip()
         elevenlabs_voice_id = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM").strip()
         openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
-        openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
-        
+        openai_model = os.getenv("OPENAI_MODEL", "gpt-6-luna").strip()
+        database_url = os.getenv("DATABASE_URL", "").strip()
+        learner_id_secret = os.getenv("LEARNER_ID_SECRET", "").strip()
+
         bot_mode = os.getenv("BOT_MODE", "conversation").strip().lower()
         host = os.getenv("HOST", "0.0.0.0").strip()
         port = int(os.getenv("PORT", "7860"))
@@ -55,7 +59,7 @@ class Settings:
             ]
             if missing:
                 raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
-        
+
         if require_ai:
             missing = [
                 name
@@ -66,7 +70,20 @@ class Settings:
                 if not value
             ]
             if missing:
-                raise ValueError(f"Missing required environment variables for AI features: {', '.join(missing)}")
+                names = ", ".join(missing)
+                raise ValueError(f"Missing required environment variables for AI features: {names}")
+
+        if require_whatsapp and require_ai:
+            missing = [
+                name
+                for name, value in [
+                    ("DATABASE_URL", database_url),
+                    ("LEARNER_ID_SECRET", learner_id_secret),
+                ]
+                if not value
+            ]
+            if missing:
+                raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
 
         return cls(
             whatsapp_token=token,
@@ -77,6 +94,8 @@ class Settings:
             elevenlabs_voice_id=elevenlabs_voice_id,
             openai_api_key=openai_api_key,
             openai_model=openai_model,
+            database_url=database_url,
+            learner_id_secret=learner_id_secret,
             bot_mode=bot_mode,
             host=host,
             port=port,
